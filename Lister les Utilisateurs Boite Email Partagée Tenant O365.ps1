@@ -1,25 +1,5 @@
 ﻿# ----------------------------------------
-# Forcer l'exécution en STA (robuste)
-# ----------------------------------------
-if ([System.Threading.Thread]::CurrentThread.ApartmentState -ne "STA") {
-
-    Write-Host "Relancement en STA..." -ForegroundColor Yellow
-
-    $scriptPath = $MyInvocation.MyCommand.Path
-
-    if (-not $scriptPath) {
-        Write-Host "Impossible de déterminer le chemin du script." -ForegroundColor Red
-        exit
-    }
-
-    Start-Process -FilePath "powershell.exe" `
-        -ArgumentList "-NoProfile -ExecutionPolicy Bypass -STA -File `"$scriptPath`"" `
-        -Verb RunAs
-
-    exit
-}
-# ----------------------------------------
-# Chargement UI
+# Chargement UI (Indispensable pour Windows Forms)
 # ----------------------------------------
 Add-Type -AssemblyName System.Windows.Forms
 Add-Type -AssemblyName System.Drawing
@@ -80,6 +60,8 @@ Write-Host "Boîte sélectionnée : $SharedMailbox" -ForegroundColor Green
 # ----------------------------------------
 # Connexion Exchange Online
 # ----------------------------------------
+# Note : Le module doit être installé sur le poste utilisateur 
+# ou inclus dans le package via certains outils.
 Import-Module ExchangeOnlineManagement -ErrorAction Stop
 Connect-ExchangeOnline
 
@@ -90,21 +72,18 @@ Write-Host "Connexion OK" -ForegroundColor Cyan
 # ----------------------------------------
 Write-Host "Récupération des permissions..." -ForegroundColor Yellow
 
-# Full Access
 $fullAccess = Get-MailboxPermission -Identity $SharedMailbox |
     Where-Object { $_.AccessRights -contains "FullAccess" -and $_.User -notlike "NT AUTHORITY\SELF" } |
     Select-Object @{Name="Mailbox";Expression={$SharedMailbox}},
                   @{Name="User";Expression={$_.User}},
                   @{Name="Permission";Expression={"FullAccess"}}
 
-# Send As
 $sendAs = Get-RecipientPermission -Identity $SharedMailbox |
     Where-Object { $_.AccessRights -contains "SendAs" } |
     Select-Object @{Name="Mailbox";Expression={$SharedMailbox}},
                   @{Name="User";Expression={$_.Trustee}},
                   @{Name="Permission";Expression={"SendAs"}}
 
-# Send on Behalf
 $sendOnBehalf = Get-Mailbox -Identity $SharedMailbox |
     Select-Object -ExpandProperty GrantSendOnBehalfTo |
     ForEach-Object {
@@ -115,19 +94,23 @@ $sendOnBehalf = Get-Mailbox -Identity $SharedMailbox |
         }
     }
 
-# Fusion
 $results = $fullAccess + $sendAs + $sendOnBehalf
 
 # ----------------------------------------
 # Export Excel
 # ----------------------------------------
-$exportPath = Join-Path -Path $PSScriptRoot -ChildPath ("Permissions_" + ($SharedMailbox -replace '@','_') + ".xlsx")
+# Utilisation de Split-Path pour garantir le chemin local à l'EXE
+$currentDir = Split-Path -Parent $MyInvocation.MyCommand.Path
+if (-not $currentDir) { $currentDir = $PSScriptRoot }
+
+$exportPath = Join-Path -Path $currentDir -ChildPath ("Permissions_" + ($SharedMailbox -replace '@','_') + ".xlsx")
 
 if (-not $results -or $results.Count -eq 0) {
     Write-Host "Aucune permission trouvée." -ForegroundColor Red
 } else {
     $results | Format-Table -AutoSize
 
+    # Nécessite le module ImportExcel installé
     $results | Export-Excel `
         -Path $exportPath `
         -WorksheetName "Permissions" `
