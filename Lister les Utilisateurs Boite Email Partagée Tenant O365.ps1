@@ -1,130 +1,59 @@
-﻿# ----------------------------------------
-# Chargement UI (Indispensable pour Windows Forms)
-# ----------------------------------------
-Add-Type -AssemblyName System.Windows.Forms
-Add-Type -AssemblyName System.Drawing
+﻿# ==============================================================================================
+# SCRIPT : Audit des Permissions (Version Stabilisée)
+# ==============================================================================================
 
-# ----------------------------------------
-# Fenêtre de saisie
-# ----------------------------------------
-$form = New-Object System.Windows.Forms.Form
-$form.Text = "Sélection boîte partagée"
-$form.Size = New-Object System.Drawing.Size(400,160)
-$form.StartPosition = "CenterScreen"
+# On s'assure que les erreurs s'affichent dans des boîtes de dialogue
+$ErrorActionPreference = "Stop"
 
-$label = New-Object System.Windows.Forms.Label
-$label.Text = "Adresse de la boîte partagée :"
-$label.AutoSize = $true
-$label.Location = New-Object System.Drawing.Point(10,20)
+try {
+    Add-Type -AssemblyName System.Windows.Forms
+} catch {}
 
-$textBox = New-Object System.Windows.Forms.TextBox
-$textBox.Size = New-Object System.Drawing.Size(360,20)
-$textBox.Location = New-Object System.Drawing.Point(10,50)
+# --- 1. INTERFACE DE SAISIE ---
+# On utilise une méthode plus simple qui ne nécessite pas de Runspace complexe
+$inputBox = New-Object -ComObject MSScriptControl.ScriptControl
+# Si l'UI complexe échoue, on peut utiliser Microsoft.VisualBasic pour une InputBox simple
+Add-Type -AssemblyName Microsoft.VisualBasic
+$SharedMailbox = [Microsoft.VisualBasic.Interaction]::InputBox("Entrez l'adresse de la boîte partagée :", "Sélection Boîte", "")
 
-$okButton = New-Object System.Windows.Forms.Button
-$okButton.Text = "OK"
-$okButton.Location = New-Object System.Drawing.Point(210,85)
+if ([string]::IsNullOrWhiteSpace($SharedMailbox)) { exit }
 
-$cancelButton = New-Object System.Windows.Forms.Button
-$cancelButton.Text = "Annuler"
-$cancelButton.Location = New-Object System.Drawing.Point(290,85)
+# --- 2. CONNEXION ET TRAITEMENT ---
+try {
+    # Import du module
+    Import-Module ExchangeOnlineManagement
+    
+    # Connexion standard (La plus compatible)
+    # Si vous n'utilisez aucun paramètre, le module ouvre une fenêtre de login standard.
+    Connect-ExchangeOnline
 
-$okButton.Add_Click({
-    if ([string]::IsNullOrWhiteSpace($textBox.Text)) {
-        [System.Windows.Forms.MessageBox]::Show("Veuillez saisir une adresse valide.")
+    # Récupération
+    $fullAccess = Get-MailboxPermission -Identity $SharedMailbox |
+        Where-Object { $_.AccessRights -contains "FullAccess" -and $_.User -notlike "NT AUTHORITY\SELF" } |
+        Select-Object @{Name="Mailbox";Expression={$SharedMailbox}}, @{Name="User";Expression={$_.User}}, @{Name="Permission";Expression={"FullAccess"}}
+
+    $sendAs = Get-RecipientPermission -Identity $SharedMailbox |
+        Where-Object { $_.AccessRights -contains "SendAs" } |
+        Select-Object @{Name="Mailbox";Expression={$SharedMailbox}}, @{Name="User";Expression={$_.Trustee}}, @{Name="Permission";Expression={"SendAs"}}
+
+    $results = $fullAccess + $sendAs
+
+    if ($results) {
+        $currentDir = $PSScriptRoot
+        if (-not $currentDir) { $currentDir = Split-Path -Parent $MyInvocation.MyCommand.Path }
+        
+        $fileName = "Permissions_" + ($SharedMailbox -replace '@','_') + ".xlsx"
+        $exportPath = Join-Path -Path $currentDir -ChildPath $fileName
+
+        # Export (nécessite ImportExcel sur le poste)
+        $results | Export-Excel -Path $exportPath -WorksheetName "Permissions" -AutoSize -BoldTopRow -AutoFilter
+        [System.Windows.Forms.MessageBox]::Show("Succès ! Fichier créé : $fileName")
     } else {
-        $form.Tag = $textBox.Text
-        $form.Close()
-    }
-})
-
-$cancelButton.Add_Click({
-    $form.Tag = $null
-    $form.Close()
-})
-
-$form.Controls.AddRange(@($label,$textBox,$okButton,$cancelButton))
-$form.Topmost = $true
-$form.Add_Shown({$textBox.Select()})
-$form.ShowDialog() | Out-Null
-
-$SharedMailbox = $form.Tag
-
-if (-not $SharedMailbox) {
-    Write-Host "Opération annulée." -ForegroundColor Red
-    exit
-}
-
-Write-Host "Boîte sélectionnée : $SharedMailbox" -ForegroundColor Green
-
-# ----------------------------------------
-# Connexion Exchange Online
-# ----------------------------------------
-# Note : Le module doit être installé sur le poste utilisateur 
-# ou inclus dans le package via certains outils.
-Import-Module ExchangeOnlineManagement -ErrorAction Stop
-Connect-ExchangeOnline
-
-Write-Host "Connexion OK" -ForegroundColor Cyan
-
-# ----------------------------------------
-# Récupération des permissions
-# ----------------------------------------
-Write-Host "Récupération des permissions..." -ForegroundColor Yellow
-
-$fullAccess = Get-MailboxPermission -Identity $SharedMailbox |
-    Where-Object { $_.AccessRights -contains "FullAccess" -and $_.User -notlike "NT AUTHORITY\SELF" } |
-    Select-Object @{Name="Mailbox";Expression={$SharedMailbox}},
-                  @{Name="User";Expression={$_.User}},
-                  @{Name="Permission";Expression={"FullAccess"}}
-
-$sendAs = Get-RecipientPermission -Identity $SharedMailbox |
-    Where-Object { $_.AccessRights -contains "SendAs" } |
-    Select-Object @{Name="Mailbox";Expression={$SharedMailbox}},
-                  @{Name="User";Expression={$_.Trustee}},
-                  @{Name="Permission";Expression={"SendAs"}}
-
-$sendOnBehalf = Get-Mailbox -Identity $SharedMailbox |
-    Select-Object -ExpandProperty GrantSendOnBehalfTo |
-    ForEach-Object {
-        [PSCustomObject]@{
-            Mailbox    = $SharedMailbox
-            User       = $_
-            Permission = "SendOnBehalf"
-        }
+        [System.Windows.Forms.MessageBox]::Show("Aucune permission trouvée.")
     }
 
-$results = $fullAccess + $sendAs + $sendOnBehalf
-
-# ----------------------------------------
-# Export Excel
-# ----------------------------------------
-# Utilisation de Split-Path pour garantir le chemin local à l'EXE
-$currentDir = Split-Path -Parent $MyInvocation.MyCommand.Path
-if (-not $currentDir) { $currentDir = $PSScriptRoot }
-
-$exportPath = Join-Path -Path $currentDir -ChildPath ("Permissions_" + ($SharedMailbox -replace '@','_') + ".xlsx")
-
-if (-not $results -or $results.Count -eq 0) {
-    Write-Host "Aucune permission trouvée." -ForegroundColor Red
-} else {
-    $results | Format-Table -AutoSize
-
-    # Nécessite le module ImportExcel installé
-    $results | Export-Excel `
-        -Path $exportPath `
-        -WorksheetName "Permissions" `
-        -AutoSize `
-        -TableName "PermissionsMailbox" `
-        -BoldTopRow `
-        -FreezeTopRow `
-        -AutoFilter
-
-    Write-Host "Export Excel : $exportPath" -ForegroundColor Green
+} catch {
+    [System.Windows.Forms.MessageBox]::Show("Erreur : $($_.Exception.Message)")
+} finally {
+    Disconnect-ExchangeOnline -Confirm:$false -ErrorAction SilentlyContinue
 }
-
-# ----------------------------------------
-# Déconnexion
-# ----------------------------------------
-Disconnect-ExchangeOnline -Confirm:$false
-Write-Host "Déconnecté." -ForegroundColor Cyan
