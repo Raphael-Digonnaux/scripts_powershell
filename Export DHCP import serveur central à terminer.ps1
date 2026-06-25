@@ -8,9 +8,8 @@ if ($MyInvocation.MyCommand.Path) {
 #On place le csv des serveurs au même endroit que le script
 #le csv doit ressembler à ceci sans les #
 #ServerName
-#serv-mdo-dc
-#serv-other-dc
-#serv-another-dc
+#serv-nom
+#serv-nom2
 
 # Chemin du fichier CSV contenant les noms des serveurs
 $csvPath = "$scriptDirectory\servers.csv"
@@ -19,7 +18,7 @@ $csvPath = "$scriptDirectory\servers.csv"
 $tempExportPath = "$scriptDirectory\TempDHCPExport"
 
 # Serveur central où importer les configurations DHCP
-$centralServer = "serv-dc02"
+$centralServer = "serv-dhcp"
 
 # Lire la liste des serveurs depuis le fichier CSV
 $servers = Import-Csv -Path $csvPath
